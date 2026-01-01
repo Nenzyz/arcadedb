@@ -469,19 +469,6 @@
                     </licenseSets>
                 </configuration>
             </plugin>
-            <plugin>
-                <groupId>org.sonatype.central</groupId>
-                <artifactId>central-publishing-maven-plugin</artifactId>
-                <version>${maven-central-publishing-plugin.version}</version>
-                <extensions>true</extensions>
-                <configuration>
-                    <publishingServerId>central</publishingServerId>
-                    <autoPublish>true</autoPublish>
-                    <excludeArtifacts>
-                        arcadedb-coverage,arcadedb-e2e,arcadedb-e2e-perf,arcadedb-e2e-ha,arcadedb-gremlin-it,arcadedb-gremlin-consumer-it,arcadedb-load-tests
-                    </excludeArtifacts>
-                </configuration>
-            </plugin>
             <!-- #5651: this configuration only takes effect when the goal is invoked by its bare
                  Maven coordinates (no pinned version), so it resolves against this declaration -
                  see .github/workflows/license-compliance.yml and
@@ -780,6 +767,19 @@
             <id>deploy-central</id>
             <build>
                 <plugins>
+                    <plugin>
+                        <groupId>org.sonatype.central</groupId>
+                        <artifactId>central-publishing-maven-plugin</artifactId>
+                        <version>${maven-central-publishing-plugin.version}</version>
+                        <extensions>true</extensions>
+                        <configuration>
+                            <publishingServerId>central</publishingServerId>
+                            <autoPublish>true</autoPublish>
+                            <excludeArtifacts>
+                                arcadedb-coverage,arcadedb-e2e,arcadedb-e2e-perf,arcadedb-e2e-ha,arcadedb-gremlin-it,arcadedb-gremlin-consumer-it,arcadedb-load-tests
+                            </excludeArtifacts>
+                        </configuration>
+                    </plugin>
                     <plugin>
                         <groupId>org.apache.maven.plugins</groupId>
                         <artifactId>maven-gpg-plugin</artifactId>
