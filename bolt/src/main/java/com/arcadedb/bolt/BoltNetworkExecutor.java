@@ -637,9 +637,8 @@ public class BoltNetworkExecutor extends Thread {
     final String principal = message.getPrincipal();
     final String credentials = message.getCredentials();
 
-    if (!authenticateUser(principal, credentials)) {
+    if (!authenticateUser(principal, credentials))
       return;
-    }
 
     sendSuccess(Map.of());
     state = State.READY;
@@ -1112,9 +1111,8 @@ public class BoltNetworkExecutor extends Thread {
       databaseName = db;
     }
 
-    if (!ensureDatabase()) {
+    if (!ensureDatabase())
       return;
-    }
 
     try {
       database.begin();
@@ -1807,6 +1805,10 @@ public class BoltNetworkExecutor extends Thread {
       return true;
     } catch (final ServerSecurityException e) {
       // Sanitize error message to avoid information disclosure
+      sendFailure(BoltException.AUTHENTICATION_ERROR, "Authentication failed");
+      state = State.FAILED;
+      return false;
+    } catch (final Exception e) {
       sendFailure(BoltException.AUTHENTICATION_ERROR, "Authentication failed");
       state = State.FAILED;
       return false;
