@@ -37,6 +37,9 @@
         <docker.buildArg.platform>arm64v8/,amd64/,winamd64/,arm32v7/</docker.buildArg.platform>
         <docker-maven-plugin.version>0.49.0</docker-maven-plugin.version>
         <docker-maven-plugin.platform>linux/amd64</docker-maven-plugin.platform>
+        <docker.image.name>nenzyz/arcadedb</docker.image.name>
+        <docker.skip.minimal>true</docker.skip.minimal>
+        <docker.skip.headless>true</docker.skip.headless>
     </properties>
 
     <build>
@@ -414,7 +417,7 @@
                             <verbose>true</verbose>
                             <images>
                                 <image>
-                                    <name>arcadedata/arcadedb</name>
+                                    <name>${docker.image.name}</name>
                                     <build>
                                         <contextDir>${project.build.directory}/arcadedb-${project.version}.dir
                                         </contextDir>
@@ -422,6 +425,7 @@
                                             <platforms>
                                                 <platform>${docker-maven-plugin.platform}</platform>
                                             </platforms>
+                                            <builderName>maven</builderName>
                                         </buildx>
                                         <tags>
                                             <tag>latest</tag>
@@ -431,7 +435,7 @@
                                 </image>
 <!-- Disabled: not worth the saved KB
                                 <image>
-                                    <name>arcadedata/arcadedb-minimal</name>
+                                    <name>nenzyz/arcadedb-minimal</name>
                                     <build>
                                         <contextDir>${project.build.directory}/arcadedb-${project.version}-minimal.dir
                                         </contextDir>
@@ -439,17 +443,19 @@
                                             <platforms>
                                                 <platform>${docker-maven-plugin.platform}</platform>
                                             </platforms>
+                                            <builderName>maven</builderName>
                                         </buildx>
                                         <tags>
                                             <tag>latest</tag>
                                             <tag>${project.version}</tag>
                                         </tags>
+                                        <skip>${docker.skip.minimal}</skip>
                                     </build>
                                 </image>
 -->
 <!-- Disabled: not worth the saved KB
                                 <image>
-                                    <name>arcadedata/arcadedb-headless</name>
+                                    <name>nenzyz/arcadedb-headless</name>
                                     <build>
                                         <contextDir>${project.build.directory}/arcadedb-${project.version}-headless.dir
                                         </contextDir>
@@ -457,11 +463,13 @@
                                             <platforms>
                                                 <platform>${docker-maven-plugin.platform}</platform>
                                             </platforms>
+                                            <builderName>maven</builderName>
                                         </buildx>
                                         <tags>
                                             <tag>latest</tag>
                                             <tag>${project.version}</tag>
                                         </tags>
+                                        <skip>${docker.skip.headless}</skip>
                                     </build>
                                 </image>
 -->
