@@ -18,6 +18,7 @@
  */
 package com.arcadedb.mongo;
 
+import com.arcadedb.Constants;
 import com.arcadedb.database.DatabaseContext;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.ProtocolContext;
@@ -43,7 +44,9 @@ import de.bwaldvogel.mongo.wire.message.MongoQuery;
 import io.netty.channel.Channel;
 
 import java.nio.charset.StandardCharsets;
+import java.time.Instant;
 import java.util.Collection;
+import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
@@ -59,6 +62,12 @@ import java.util.function.Supplier;
  * {@code dropCollection} and {@code unregisterCollection} for a {@code renameCollection}), and a thread that reaches one
  * of them untagged reads {@link ProtocolContext#INTERNAL}, which exempts it from the HA gate that refuses client work on a
  * database whose directory is being replaced from the leader's snapshot, and reports it as the engine's own work.
+ * <p>
+ * Also answers the server identification commands ({@code buildInfo}, {@code ismaster}, {@code hello})
+ * to identify as ArcadeDB rather than a real MongoDB instance. This prevents vulnerability scanners
+ * (Nessus, Qualys, Rapid7) from incorrectly flagging ArcadeDB with MongoDB-specific CVEs
+ * (e.g. CVE-2025-14847 / MongoBleed). The reported compatibility version ({@value #MONGO_COMPAT_VERSION}) is
+ * above all known MongoDB CVE ranges while remaining compatible with the advertised wire protocol version.
  */
 public class MongoDBBackend extends AbstractMongoBackend {
   /** The protocol a MongoDB client's work is attributed to by the query metrics, the trace spans and the HA gate. */
@@ -94,6 +103,19 @@ public class MongoDBBackend extends AbstractMongoBackend {
       "connectionstatus", "hostinfo", "getcmdlineopts", "getfreemonitoringstatus", "getlog", "replsetgetstatus",
       "getparameter", "atlasversion");
 
+  /**
+   * MongoDB compatibility version reported to clients and scanners.
+   * Set above all known CVE-affected version ranges to avoid false positive vulnerability flags.
+   * This does NOT imply full MongoDB 7.0.x feature support.
+   */
+  private static final String MONGO_COMPAT_VERSION = "7.0.99";
+  private static final List<Integer> MONGO_COMPAT_VERSION_ARRAY = List.of(7, 0, 99, 0);
+
+  private static final int MAX_BSON_OBJECT_SIZE = 16 * 1024 * 1024;
+  private static final int MAX_WRITE_BATCH_SIZE = 1000;
+  private static final int MAX_MESSAGE_SIZE_BYTES = 48 * 1000 * 1000;
+  private static final int MAX_WIRE_VERSION = 8;
+
   private final ArcadeDBServer        server;
   private final MongoDBProtocolPlugin plugin;
 
@@ -105,6 +127,57 @@ public class MongoDBBackend extends AbstractMongoBackend {
   public MongoDBBackend(final ArcadeDBServer server, final MongoDBProtocolPlugin plugin) {
     this.server = server;
     this.plugin = plugin;
+  }
+
+  private Document buildInfoResponse() {
+    final Document response = new Document();
+    response.put("version", MONGO_COMPAT_VERSION);
+    response.put("versionArray", MONGO_COMPAT_VERSION_ARRAY);
+    response.put("gitVersion", "");
+    response.put("modules", List.of());
+    response.put("sysInfo", "deprecated");
+    response.put("bits", 64);
+    response.put("debug", false);
+    response.put("maxBsonObjectSize", MAX_BSON_OBJECT_SIZE);
+
+    // ArcadeDB identity extension (same pattern as FerretDB's "ferretdb" field)
+    final Document arcadedbInfo = new Document();
+    arcadedbInfo.put("version", Constants.getRawVersion());
+    arcadedbInfo.put("product", Constants.PRODUCT);
+    response.put("arcadedb", arcadedbInfo);
+
+    Utils.markOkay(response);
+    return response;
+  }
+
+  private Document isMasterResponse() {
+    final Document response = new Document();
+    response.put("ismaster", true);
+    response.put("maxBsonObjectSize", MAX_BSON_OBJECT_SIZE);
+    response.put("maxWriteBatchSize", MAX_WRITE_BATCH_SIZE);
+    response.put("maxMessageSizeBytes", MAX_MESSAGE_SIZE_BYTES);
+    response.put("maxWireVersion", MAX_WIRE_VERSION);
+    response.put("minWireVersion", 0);
+    response.put("localTime", Instant.now());
+    response.put("compression", List.of());
+
+    Utils.markOkay(response);
+    return response;
+  }
+
+  private Document helloResponse() {
+    final Document response = new Document();
+    response.put("isWritablePrimary", true);
+    response.put("maxBsonObjectSize", MAX_BSON_OBJECT_SIZE);
+    response.put("maxWriteBatchSize", MAX_WRITE_BATCH_SIZE);
+    response.put("maxMessageSizeBytes", MAX_MESSAGE_SIZE_BYTES);
+    response.put("maxWireVersion", MAX_WIRE_VERSION);
+    response.put("minWireVersion", 0);
+    response.put("localTime", Instant.now());
+    response.put("compression", List.of());
+
+    Utils.markOkay(response);
+    return response;
   }
 
   @Override
@@ -197,6 +270,17 @@ public class MongoDBBackend extends AbstractMongoBackend {
     // The handshake and diagnostic commands the library answers itself, without resolving any database: let through so
     // drivers can complete the connection handshake before authenticating.
     final String normalizedCommand = command.toLowerCase(Locale.ENGLISH);
+    // Server identification: answered as ArcadeDB rather than with the library's vanilla MongoDB fingerprint
+    switch (normalizedCommand) {
+    case "buildinfo":
+      return buildInfoResponse();
+    case "ismaster":
+      return isMasterResponse();
+    case "hello":
+      return helloResponse();
+    default:
+      break;
+    }
     if (NO_DATABASE_COMMANDS.contains(normalizedCommand))
       return super.handleCommand(channel, databaseName, command, query);
 
