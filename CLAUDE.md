@@ -118,6 +118,85 @@ green or spuriously red* run rather than an error that tells you what you did wr
   port is answered by whatever already listens there, and the failures read as authentication errors
   (`403`, "Too many failed authentication attempts") rather than as a port conflict. Check with
   `lsof -nP -iTCP:2480-2489 -sTCP:LISTEN` before believing a wall of red in the `server` module
+- **Studio frontend requirements**: Node.js >=18.12.0, npm >=8.0.0 (`cd studio && npm run build` / `npm run dev` / `npm run security-audit`)
+
+### Server Operations
+- **Start server**: Use packaged scripts in `package/src/main/scripts/server.sh` (Unix) or `server.bat` (Windows)
+- **Console**: Use `package/src/main/scripts/console.sh` or `console.bat`
+- **Restore**: Use `package/src/main/scripts/restore.sh`
+
+### Distribution Builder
+
+The modular distribution builder (`package/arcadedb-builder.sh`) creates custom ArcadeDB distributions:
+
+**Production builds** (download from releases):
+```bash
+cd package
+./arcadedb-builder.sh --version=26.1.0 --modules=gremlin,studio
+```
+
+**Development builds** (use local Maven repository):
+```bash
+# Build modules first
+mvn clean install -DskipTests
+
+# Create distribution with local modules
+cd package
+VERSION=$(mvn -f ../pom.xml help:evaluate -Dexpression=project.version -q -DforceStdout)
+./arcadedb-builder.sh \
+    --version=$VERSION \
+    --modules=console,gremlin,studio \
+    --local-repo \
+    --skip-docker
+```
+
+**Testing the builder**:
+```bash
+cd package
+./test-builder-local.sh
+```
+
+### Built Distribution Location
+After building, the distribution is located at: `package/target/arcadedb-<version>.dir/arcadedb-<version>/`
+
+## Architecture Overview
+
+### Core Modules
+- **engine/**: Core database engine, storage, indexing, query execution
+- **server/**: HTTP/REST API, WebSocket support, clustering/HA functionality
+- **network/**: Network communication layer
+- **studio/**: Web-based administration interface (JavaScript/Node.js)
+- **console/**: Command-line console application
+- **gremlin/**: Apache Tinkerpop Gremlin support
+- **mongodbw/**: MongoDB wire protocol compatibility
+- **redisw/**: Redis wire protocol compatibility
+- **graphql/**: GraphQL API support
+- **postgresw/**: PostgreSQL wire protocol compatibility
+- **grpc/**: gRPC protocol definitions
+- **grpcw/**: gRPC wire protocol implementation
+- **grpc-client/**: gRPC client library
+- **metrics/**: Metrics and monitoring
+- **integration/**: Integration tests
+- **e2e/**: End-to-end tests
+- **e2e-perf/**: Performance tests
+- **package/**: Distribution packaging and scripts
+- **coverage/**: Code coverage reports
+
+### Key Engine Components
+- **Database Management**: `com.arcadedb.database.*` - Database lifecycle, transactions, ACID compliance
+- **Storage Engine**: `com.arcadedb.engine.*` - Low-level storage, page management, WAL
+- **Query Processing**: `com.arcadedb.query.sql.*` - SQL query parsing, execution planning
+- **Schema Management**: `com.arcadedb.schema.*` - Type definitions, property management
+- **Index System**: `com.arcadedb.index.*` - LSM-Tree indexes, full-text, vector indexes
+- **Graph Engine**: `com.arcadedb.graph.*` - Vertex/Edge management, graph traversals
+- **Serialization**: `com.arcadedb.serializer.*` - Binary serialization, JSON handling
+
+### Server Components
+- **HTTP API**: `com.arcadedb.server.http.*` - REST endpoints, request handling
+- **High Availability**: `com.arcadedb.server.ha.*` - Clustering, replication, leader election
+- **Security**: `com.arcadedb.server.security.*` - Authentication, authorization
+- **Monitoring**: `com.arcadedb.server.monitor.*` - Metrics, health checks
+- **Events**: `com.arcadedb.server.event.*` - Server event handling
 
 ## Pull Request Reviews
 
@@ -139,6 +218,30 @@ Before adding any new parallelism to engine code, read the `engine-concurrency` 
 - **OpenCypher Engine**: `com.arcadedb.query.opencypher.*` has both optimizer and legacy execution paths — changes to clause handling may need updates in multiple paths
 - **HTTP handlers**: `DatabaseAbstractHandler` is the base handler and wraps commands in transactions
 
+### Testing Approach
+- Unit tests in each module's `src/test/java`
+- Integration tests with `IT` suffix - run with `-P integration` or `-DskipITs=false`
+- Performance tests in `performance/` packages and `e2e-perf/` module
+- End-to-end tests in `e2e/` module
+- Use TestContainers for external service testing
+- Separate test databases in `databases/` for isolation
+- Coverage reports available via `-P coverage` profile
+
+### Key Database Capabilities
+- **ACID Transactions**: Full transaction support with isolation levels
+- **Multi-Model**: Graph, Document, Key/Value, Search Engine, Time Series, Vector Embedding
+- **Query Languages**: SQL (OrientDB-compatible), Cypher (OpenCypher), Gremlin, GraphQL, MongoDB Query Language
+- **Indexing**: LSM-Tree indexes, full-text (Lucene), vector embeddings with distance calculations
+- **High Availability**: Leader-follower replication, automatic failover, quorum-based operations
+- **Wire Protocols**: HTTP/JSON, PostgreSQL, MongoDB, Redis, gRPC
+
+### Package Variants
+
+Three release variants are available:
+- **full**: Complete package with all modules
+- **minimal**: Excludes `gremlin`, `redisw`, `mongodbw`, `graphql` modules
+- **headless**: Excludes `gremlin`, `redisw`, `mongodbw`, `graphql`, `studio` modules
+
 #### Wire Protocol Module Dependencies
 - **Standard**: All wire protocol modules (gremlin, graphql, mongodbw, redisw, postgresw, bolt, grpcw) must use `provided` scope for `arcadedb-server` dependency
 - **Rationale**: Server remains the assembly point; prevents dependency duplication in distributions
@@ -155,4 +258,8 @@ Before adding any new parallelism to engine code, read the `engine-concurrency` 
 ## Important Notes
 
 - **Code formatting**: Prettier with `requirePragma: true` and `printWidth: 160` — only formats files with a `@format` pragma
+- **Pre-commit hooks**: This project uses [pre-commit](https://pre-commit.com/) for code quality checks - must be installed locally by developers
+- **JVM Arguments**: Tests and server require specific JVM exports: `--add-exports java.management/sun.management=ALL-UNNAMED --add-opens java.base/java.util.concurrent.atomic=ALL-UNNAMED --add-opens java.base/java.nio.channels.spi=ALL-UNNAMED`
+- **Licensing**: All code must comply with Apache 2.0 license
 - **Modular Builder**: Script to create custom distributions with selected modules (see `package/README-BUILDER.md`)
+- **Security Issues**: Report to support@arcadedata.com, not public GitHub issues
