@@ -19,7 +19,6 @@
 package com.arcadedb.bolt;
 
 import com.arcadedb.GlobalConfiguration;
-import com.arcadedb.test.BaseGraphServerTest;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
@@ -32,28 +31,24 @@ import static org.assertj.core.api.Assertions.assertThat;
 /**
  * Integration tests for BOLT protocol bookmark handling.
  */
-public class BoltBookmarkIT extends BaseGraphServerTest {
-
-  private static final int TEST_BOLT_PORT = 17693;
+public class BoltBookmarkIT extends BaseBoltServerTest {
 
   @Override
   public void setTestConfiguration() {
     super.setTestConfiguration();
     GlobalConfiguration.SERVER_PLUGINS.setValue("Bolt:com.arcadedb.bolt.BoltProtocolPlugin");
-    GlobalConfiguration.BOLT_PORT.setValue(TEST_BOLT_PORT);
   }
 
   @AfterEach
   @Override
   public void endTest() {
     GlobalConfiguration.SERVER_PLUGINS.setValue("");
-    GlobalConfiguration.BOLT_PORT.reset();
     super.endTest();
   }
 
   private Driver getDriver() {
     return GraphDatabase.driver(
-        "bolt://127.0.0.1:" + TEST_BOLT_PORT,
+        "bolt://127.0.0.1:" + getServerBoltPort(),
         AuthTokens.basic("root", DEFAULT_PASSWORD_FOR_TESTS),
         Config.builder()
             .withoutEncryption()
@@ -117,12 +112,8 @@ public class BoltBookmarkIT extends BaseGraphServerTest {
 
       // If bookmarks are returned, they should contain valid non-empty strings
       if (bookmarks != null && !bookmarks.isEmpty()) {
-        for (final Bookmark bookmark : bookmarks) {
-          assertThat(bookmark.values()).isNotEmpty();
-          for (final String value : bookmark.values()) {
-            assertThat(value).isNotNull().isNotEmpty();
-          }
-        }
+        for (final Bookmark bookmark : bookmarks)
+          assertThat(bookmark.value()).isNotNull().isNotEmpty();
       }
 
       // Cleanup

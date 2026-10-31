@@ -24,7 +24,6 @@ import com.arcadedb.bolt.message.HelloMessage;
 import com.arcadedb.bolt.message.RouteMessage;
 import com.arcadedb.bolt.packstream.PackStreamReader;
 import com.arcadedb.bolt.packstream.PackStreamWriter;
-import com.arcadedb.test.BaseGraphServerTest;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
@@ -48,22 +47,18 @@ import static org.assertj.core.api.Assertions.assertThat;
  * attempts routing discovery against the "system" database, which ArcadeDB does not have.
  * This is a known limitation. The ROUTE message itself works correctly at the protocol level.
  */
-public class BoltRoutingIT extends BaseGraphServerTest {
-
-  private static final int TEST_BOLT_PORT = 17694;
+public class BoltRoutingIT extends BaseBoltServerTest {
 
   @Override
   public void setTestConfiguration() {
     super.setTestConfiguration();
     GlobalConfiguration.SERVER_PLUGINS.setValue("Bolt:com.arcadedb.bolt.BoltProtocolPlugin");
-    GlobalConfiguration.BOLT_PORT.setValue(TEST_BOLT_PORT);
   }
 
   @AfterEach
   @Override
   public void endTest() {
     GlobalConfiguration.SERVER_PLUGINS.setValue("");
-    GlobalConfiguration.BOLT_PORT.reset();
     GlobalConfiguration.BOLT_ROUTING_TTL.reset();
     super.endTest();
   }
@@ -72,7 +67,7 @@ public class BoltRoutingIT extends BaseGraphServerTest {
    * Performs Bolt handshake + HELLO on a raw socket, returning the socket in READY state.
    */
   private Socket connectAndAuthenticate() throws Exception {
-    final Socket socket = new Socket("127.0.0.1", TEST_BOLT_PORT);
+    final Socket socket = new Socket("127.0.0.1", getServerBoltPort());
     final DataOutputStream out = new DataOutputStream(socket.getOutputStream());
     final DataInputStream in = new DataInputStream(socket.getInputStream());
 
@@ -175,13 +170,13 @@ public class BoltRoutingIT extends BaseGraphServerTest {
           .toList();
       assertThat(roles).containsExactlyInAnyOrder("WRITE", "READ", "ROUTE");
 
-      // Each server entry should have a non-empty addresses list with the expected address
-      final String expectedAddress = "127.0.0.1:" + TEST_BOLT_PORT;
+      // Each server entry should have a non-empty addresses list advertising the port the server bound
+      final String expectedPortSuffix = ":" + getServerBoltPort();
       for (final Map<String, Object> server : servers) {
         @SuppressWarnings("unchecked")
         final List<String> addresses = (List<String>) server.get("addresses");
         assertThat(addresses).isNotEmpty();
-        assertThat(addresses).contains(expectedAddress);
+        assertThat(addresses).anyMatch(address -> address.endsWith(expectedPortSuffix));
       }
     }
   }

@@ -19,7 +19,6 @@
 package com.arcadedb.bolt;
 
 import com.arcadedb.GlobalConfiguration;
-import com.arcadedb.test.BaseGraphServerTest;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
@@ -39,28 +38,24 @@ import static org.assertj.core.api.Assertions.fail;
  * Gap-filling integration tests for cross-category scenarios and edge cases
  * not covered by the individual category IT classes.
  */
-public class BoltIntegrationGapIT extends BaseGraphServerTest {
-
-  private static final int TEST_BOLT_PORT = 17697;
+public class BoltIntegrationGapIT extends BaseBoltServerTest {
 
   @Override
   public void setTestConfiguration() {
     super.setTestConfiguration();
     GlobalConfiguration.SERVER_PLUGINS.setValue("Bolt:com.arcadedb.bolt.BoltProtocolPlugin");
-    GlobalConfiguration.BOLT_PORT.setValue(TEST_BOLT_PORT);
   }
 
   @AfterEach
   @Override
   public void endTest() {
     GlobalConfiguration.SERVER_PLUGINS.setValue("");
-    GlobalConfiguration.BOLT_PORT.reset();
     super.endTest();
   }
 
   private Driver getDriver() {
     return GraphDatabase.driver(
-        "bolt://127.0.0.1:" + TEST_BOLT_PORT,
+        "bolt://127.0.0.1:" + getServerBoltPort(),
         AuthTokens.basic("root", DEFAULT_PASSWORD_FOR_TESTS),
         Config.builder()
             .withoutEncryption()
@@ -70,7 +65,7 @@ public class BoltIntegrationGapIT extends BaseGraphServerTest {
 
   private Driver getDriver(final String user, final String password) {
     return GraphDatabase.driver(
-        "bolt://127.0.0.1:" + TEST_BOLT_PORT,
+        "bolt://127.0.0.1:" + getServerBoltPort(),
         AuthTokens.basic(user, password),
         Config.builder()
             .withoutEncryption()

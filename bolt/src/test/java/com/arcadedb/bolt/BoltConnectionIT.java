@@ -19,7 +19,6 @@
 package com.arcadedb.bolt;
 
 import com.arcadedb.GlobalConfiguration;
-import com.arcadedb.test.BaseGraphServerTest;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
@@ -35,28 +34,24 @@ import static org.assertj.core.api.Assertions.assertThat;
 /**
  * Integration tests for BOLT connection lifecycle.
  */
-public class BoltConnectionIT extends BaseGraphServerTest {
-
-  private static final int TEST_BOLT_PORT = 17696;
+public class BoltConnectionIT extends BaseBoltServerTest {
 
   @Override
   public void setTestConfiguration() {
     super.setTestConfiguration();
     GlobalConfiguration.SERVER_PLUGINS.setValue("Bolt:com.arcadedb.bolt.BoltProtocolPlugin");
-    GlobalConfiguration.BOLT_PORT.setValue(TEST_BOLT_PORT);
   }
 
   @AfterEach
   @Override
   public void endTest() {
     GlobalConfiguration.SERVER_PLUGINS.setValue("");
-    GlobalConfiguration.BOLT_PORT.reset();
     super.endTest();
   }
 
   private Driver getDriver() {
     return GraphDatabase.driver(
-        "bolt://127.0.0.1:" + TEST_BOLT_PORT,
+        "bolt://127.0.0.1:" + getServerBoltPort(),
         AuthTokens.basic("root", DEFAULT_PASSWORD_FOR_TESTS),
         Config.builder()
             .withoutEncryption()
@@ -105,7 +100,7 @@ public class BoltConnectionIT extends BaseGraphServerTest {
   @Test
   void testAbruptDisconnect() throws Exception {
     // Open a raw socket, perform handshake, then abruptly close without GOODBYE
-    try (Socket socket = new Socket("127.0.0.1", TEST_BOLT_PORT)) {
+    try (Socket socket = new Socket("127.0.0.1", getServerBoltPort())) {
       final DataOutputStream out = new DataOutputStream(socket.getOutputStream());
 
       // Send BOLT magic

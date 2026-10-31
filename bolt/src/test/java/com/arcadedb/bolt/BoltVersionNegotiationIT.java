@@ -19,7 +19,6 @@
 package com.arcadedb.bolt;
 
 import com.arcadedb.GlobalConfiguration;
-import com.arcadedb.test.BaseGraphServerTest;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
@@ -35,28 +34,24 @@ import static org.assertj.core.api.Assertions.assertThat;
 /**
  * Integration tests for BOLT protocol version negotiation.
  */
-public class BoltVersionNegotiationIT extends BaseGraphServerTest {
-
-  private static final int TEST_BOLT_PORT = 17695;
+public class BoltVersionNegotiationIT extends BaseBoltServerTest {
 
   @Override
   public void setTestConfiguration() {
     super.setTestConfiguration();
     GlobalConfiguration.SERVER_PLUGINS.setValue("Bolt:com.arcadedb.bolt.BoltProtocolPlugin");
-    GlobalConfiguration.BOLT_PORT.setValue(TEST_BOLT_PORT);
   }
 
   @AfterEach
   @Override
   public void endTest() {
     GlobalConfiguration.SERVER_PLUGINS.setValue("");
-    GlobalConfiguration.BOLT_PORT.reset();
     super.endTest();
   }
 
   private Driver getDriver() {
     return GraphDatabase.driver(
-        "bolt://127.0.0.1:" + TEST_BOLT_PORT,
+        "bolt://127.0.0.1:" + getServerBoltPort(),
         AuthTokens.basic("root", DEFAULT_PASSWORD_FOR_TESTS),
         Config.builder()
             .withoutEncryption()
@@ -117,7 +112,7 @@ public class BoltVersionNegotiationIT extends BaseGraphServerTest {
   @Test
   void testRawSocketHandshakeWithValidVersionProposals() throws IOException {
     // Send raw BOLT handshake with valid version proposals and verify negotiated version
-    try (Socket socket = new Socket("127.0.0.1", TEST_BOLT_PORT)) {
+    try (Socket socket = new Socket("127.0.0.1", getServerBoltPort())) {
       final DataOutputStream out = new DataOutputStream(socket.getOutputStream());
       final DataInputStream in = new DataInputStream(socket.getInputStream());
 
@@ -127,8 +122,8 @@ public class BoltVersionNegotiationIT extends BaseGraphServerTest {
       out.writeByte(0xB0);
       out.writeByte(0x17);
 
-      // Send 4 version proposals (big-endian): v4.4, v4.0, v3.0, 0
-      out.writeInt(0x00000104); // v4.4
+      // Send 4 version proposals (big-endian, bytes = [reserved, range, minor, major]): v4.4, v4.0, v3.0, 0
+      out.writeInt(0x00000404); // v4.4
       out.writeInt(0x00000004); // v4.0
       out.writeInt(0x00000003); // v3.0
       out.writeInt(0x00000000); // no version
@@ -137,18 +132,15 @@ public class BoltVersionNegotiationIT extends BaseGraphServerTest {
       // Read negotiated version (4 bytes, big-endian)
       final int negotiatedVersion = in.readInt();
 
-      // Server should pick v4.4 (0x00000104) as the first supported match
-      assertThat(negotiatedVersion).isEqualTo(0x00000104);
+      // Server should pick v4.4 (0x00000404) as the first supported match
+      assertThat(negotiatedVersion).isEqualTo(0x00000404);
     }
   }
 
   @Test
   void testRawSocketHandshakeWithUnsupportedVersionProposal() throws IOException {
-    // Send raw BOLT handshake with only unsupported versions.
-    // NOTE: ArcadeDB's version negotiation uses major-version matching via (version >> 8),
-    // which causes versions with a zero high byte to match supported versions. As a result,
-    // the server returns a supported version rather than 0. This test documents that behavior.
-    try (Socket socket = new Socket("127.0.0.1", TEST_BOLT_PORT)) {
+    // Send raw BOLT handshake with only unsupported versions: the server must answer 0 (no version agreed).
+    try (Socket socket = new Socket("127.0.0.1", getServerBoltPort())) {
       final DataOutputStream out = new DataOutputStream(socket.getOutputStream());
       final DataInputStream in = new DataInputStream(socket.getInputStream());
 
@@ -158,18 +150,15 @@ public class BoltVersionNegotiationIT extends BaseGraphServerTest {
       out.writeByte(0xB0);
       out.writeByte(0x17);
 
-      // Send 4 unsupported version proposals (high bytes are 0, which matches any supported version's high byte)
-      out.writeInt(0x00000099); // unsupported but major byte matches
-      out.writeInt(0x00000098); // unsupported but major byte matches
-      out.writeInt(0x00000097); // unsupported but major byte matches
-      out.writeInt(0x00000096); // unsupported but major byte matches
+      // Send 4 unsupported version proposals (majors 0x99..0x96 do not exist)
+      out.writeInt(0x00000099);
+      out.writeInt(0x00000098);
+      out.writeInt(0x00000097);
+      out.writeInt(0x00000096);
       out.flush();
 
-      // Server returns a supported version due to major-version matching behavior
       final int negotiatedVersion = in.readInt();
-      assertThat(negotiatedVersion).isNotEqualTo(0x00000099);
-      // The server returns one of its supported versions
-      assertThat(negotiatedVersion).isGreaterThan(0);
+      assertThat(negotiatedVersion).isZero();
     }
   }
 }
