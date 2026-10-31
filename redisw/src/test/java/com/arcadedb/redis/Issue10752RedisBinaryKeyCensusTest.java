@@ -21,11 +21,13 @@ package com.arcadedb.redis;
 import com.arcadedb.GlobalConfiguration;
 import org.junit.jupiter.api.Test;
 import redis.clients.jedis.Jedis;
+import redis.clients.jedis.args.ListPosition;
 
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
+import java.util.Set;
 import java.util.TreeSet;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -154,12 +156,161 @@ public class Issue10752RedisBinaryKeyCensusTest extends BaseRedisServerTest {
       assertThat(jedis.hdel(bucket, fieldA)).as(where).isEqualTo(1L);
       assertThat(jedis.exists(b)).as(where + ": the HDEL of one key left the other").isTrue();
     }
+    case "DEL", "UNLINK" -> {
+      jedis.set(a, bytes("A"));
+      jedis.set(b, bytes("B"));
+      assertThat("DEL".equals(command) ? jedis.del(a) : jedis.unlink(a)).as(where).isEqualTo(1L);
+      assertThat(jedis.exists(b)).as(where + ": deleting one key deleted the other").isTrue();
+    }
+    case "TYPE" -> {
+      jedis.set(a, bytes("A"));
+      jedis.rpush(b, bytes("B"));
+      assertThat(jedis.type(a)).as(where).isEqualTo("string");
+      assertThat(jedis.type(b)).as(where).isEqualTo("list");
+    }
+    case "EXPIRE", "PEXPIRE", "EXPIREAT", "PEXPIREAT", "TTL", "PTTL", "PERSIST" -> {
+      jedis.set(a, bytes("A"));
+      jedis.set(b, bytes("B"));
+      switch (command) {
+      case "EXPIRE" -> jedis.expire(a, 100);
+      case "PEXPIRE" -> jedis.pexpire(a, 100_000);
+      case "EXPIREAT" -> jedis.expireAt(a, System.currentTimeMillis() / 1000 + 100);
+      case "PEXPIREAT" -> jedis.pexpireAt(a, System.currentTimeMillis() + 100_000);
+      default -> {
+        jedis.expire(a, 100);
+        jedis.expire(b, 100);
+        if ("PERSIST".equals(command))
+          assertThat(jedis.persist(a)).as(where).isEqualTo(1L);
+      }
+      }
+      if ("PERSIST".equals(command)) {
+        assertThat(jedis.ttl(a)).as(where).isEqualTo(-1L);
+        assertThat(jedis.ttl(b)).as(where).isPositive();
+      } else {
+        assertThat("PTTL".equals(command) ? jedis.pttl(a) : jedis.ttl(a)).as(where).isPositive();
+        if (!"TTL".equals(command) && !"PTTL".equals(command))
+          assertThat(jedis.ttl(b)).as(where + ": the TTL of one key went to the other").isEqualTo(-1L);
+      }
+    }
+    case "RENAME", "RENAMENX" -> {
+      jedis.set(a, bytes("A"));
+      if ("RENAME".equals(command))
+        jedis.rename(a, b);
+      else
+        assertThat(jedis.renamenx(a, b)).as(where).isEqualTo(1L);
+      assertThat(jedis.exists(a)).as(where).isFalse();
+      assertThat(jedis.get(b)).as(where).isEqualTo(bytes("A"));
+    }
+    case "APPEND", "STRLEN" -> {
+      jedis.append(a, bytes("AA"));
+      jedis.append(b, bytes("B"));
+      assertThat(jedis.strlen(a)).as(where).isEqualTo(2L);
+      assertThat(jedis.strlen(b)).as(where).isEqualTo(1L);
+    }
+    case "GETRANGE", "SETRANGE" -> {
+      jedis.set(a, bytes("AAAA"));
+      jedis.set(b, bytes("BBBB"));
+      jedis.setrange(a, 1, bytes("x"));
+      assertThat(jedis.getrange(a, 0, -1)).as(where).isEqualTo(bytes("AxAA"));
+      assertThat(jedis.getrange(b, 0, -1)).as(where).isEqualTo(bytes("BBBB"));
+    }
+    case "MGET", "MSET", "MSETNX" -> {
+      if ("MSETNX".equals(command))
+        assertThat(jedis.msetnx(a, bytes("A"), b, bytes("B"))).as(where).isEqualTo(1L);
+      else
+        jedis.mset(a, bytes("A"), b, bytes("B"));
+      final List<byte[]> values = jedis.mget(a, b);
+      assertThat(values.get(0)).as(where).isEqualTo(bytes("A"));
+      assertThat(values.get(1)).as(where).isEqualTo(bytes("B"));
+    }
+    case "GETSET", "SETNX" -> {
+      jedis.set(a, bytes("A"));
+      if ("GETSET".equals(command))
+        assertThat(jedis.getSet(b, bytes("B"))).as(where).isNull();
+      else
+        assertThat(jedis.setnx(b, bytes("B"))).as(where).isEqualTo(1L);
+      assertThat(jedis.get(a)).as(where).isEqualTo(bytes("A"));
+      assertThat(jedis.get(b)).as(where).isEqualTo(bytes("B"));
+    }
+    case "SETEX", "PSETEX" -> {
+      if ("SETEX".equals(command)) {
+        jedis.setex(a, 100, bytes("A"));
+        jedis.setex(b, 100, bytes("B"));
+      } else {
+        jedis.psetex(a, 100_000, bytes("A"));
+        jedis.psetex(b, 100_000, bytes("B"));
+      }
+      assertThat(jedis.get(a)).as(where).isEqualTo(bytes("A"));
+      assertThat(jedis.get(b)).as(where).isEqualTo(bytes("B"));
+    }
+    case "LPUSH", "RPUSH", "LPOP", "RPOP", "LLEN", "LRANGE", "LINDEX", "LSET", "LINSERT", "LREM", "LTRIM" -> {
+      jedis.rpush(a, bytes("A1"), bytes("A2"));
+      if ("LPUSH".equals(command))
+        jedis.lpush(b, bytes("B"));
+      else
+        jedis.rpush(b, bytes("B"));
+      switch (command) {
+      case "LPOP" -> assertThat(jedis.lpop(a)).as(where).isEqualTo(bytes("A1"));
+      case "RPOP" -> assertThat(jedis.rpop(a)).as(where).isEqualTo(bytes("A2"));
+      case "LSET" -> jedis.lset(a, 0, bytes("A0"));
+      case "LINSERT" -> jedis.linsert(a, ListPosition.BEFORE, bytes("A1"), bytes("A0"));
+      case "LREM" -> assertThat(jedis.lrem(a, 0, bytes("A1"))).as(where).isEqualTo(1L);
+      case "LTRIM" -> jedis.ltrim(a, 0, 0);
+      default -> {
+      }
+      }
+      assertThat(jedis.lrange(b, 0, -1)).as(where).containsExactly(bytes("B"));
+      assertThat(jedis.llen(b)).as(where).isEqualTo(1L);
+      assertThat(jedis.lindex(b, 0)).as(where).isEqualTo(bytes("B"));
+      assertThat(jedis.llen(a)).as(where).isPositive();
+    }
+    case "RPOPLPUSH" -> {
+      jedis.rpush(a, bytes("A"));
+      assertThat(jedis.rpoplpush(a, b)).as(where).isEqualTo(bytes("A"));
+      assertThat(jedis.exists(a)).as(where).isFalse();
+      assertThat(jedis.lrange(b, 0, -1)).as(where).containsExactly(bytes("A"));
+    }
+    case "SADD", "SREM", "SISMEMBER", "SMEMBERS", "SCARD", "SRANDMEMBER", "SPOP" -> {
+      jedis.sadd(a, bytes("A1"), bytes("A2"));
+      jedis.sadd(b, bytes("B"));
+      switch (command) {
+      case "SREM" -> assertThat(jedis.srem(a, bytes("A1"))).as(where).isEqualTo(1L);
+      case "SPOP" -> assertThat(jedis.spop(a)).as(where).isNotNull();
+      case "SRANDMEMBER" -> assertThat(jedis.srandmember(b)).as(where).isEqualTo(bytes("B"));
+      default -> {
+      }
+      }
+      assertThat(jedis.smembers(b)).as(where).containsExactly(bytes("B"));
+      assertThat(jedis.scard(b)).as(where).isEqualTo(1L);
+      assertThat(jedis.sismember(b, bytes("B"))).as(where).isTrue();
+      assertThat(jedis.sismember(a, bytes("B"))).as(where).isFalse();
+    }
+    case "SDIFF", "SINTER", "SUNION" -> {
+      jedis.sadd(a, bytes("X"), bytes("A"));
+      jedis.sadd(b, bytes("X"), bytes("B"));
+      final Set<byte[]> result = switch (command) {
+        case "SDIFF" -> jedis.sdiff(a, b);
+        case "SINTER" -> jedis.sinter(a, b);
+        default -> jedis.sunion(a, b);
+      };
+      assertThat(result).as(where).hasSize("SUNION".equals(command) ? 3 : 1);
+    }
+    case "SDIFFSTORE", "SINTERSTORE", "SUNIONSTORE" -> {
+      jedis.sadd(b, bytes("B"));
+      final long stored = switch (command) {
+        case "SDIFFSTORE" -> jedis.sdiffstore(a, b);
+        case "SINTERSTORE" -> jedis.sinterstore(a, b, b);
+        default -> jedis.sunionstore(a, b);
+      };
+      assertThat(stored).as(where).isEqualTo(1L);
+      assertThat(jedis.smembers(a)).as(where).containsExactly(bytes("B"));
+      assertThat(jedis.smembers(b)).as(where).containsExactly(bytes("B"));
+    }
     default -> fail("RedisArguments lists '" + command + "' as a key command and this census has no probe for it: add one");
     }
 
-    // nothing of this probe is left for the next one (DEL is not a command of the wrapper)
-    jedis.getDel(a);
-    jedis.getDel(b);
+    // nothing of this probe is left for the next one
+    jedis.del(a, b);
   }
 
   private static byte[] key(final String prefix, final String tag, final int invalidByte) {

@@ -51,12 +51,15 @@ import java.net.SocketTimeoutException;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.HashSet;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
+import java.util.concurrent.ThreadLocalRandom;
+import java.util.function.Function;
 import java.util.function.UnaryOperator;
 import java.util.logging.Level;
 
@@ -70,11 +73,17 @@ public class RedisNetworkExecutor extends Thread {
    * terminate. Anything that can touch a record, an index, a query or a lock must stay gated.
    */
   private static final Set<String> UNGATED_COMMANDS = Set.of("PING", "SELECT", "GET", "SET", "GETDEL", "EXISTS", "INCR",
-      "INCRBY", "INCRBYFLOAT", "DECR", "DECRBY");
+      "INCRBY", "INCRBYFLOAT", "DECR", "DECRBY", "ECHO", "TYPE", "TTL", "PTTL", "EXPIRE", "PEXPIRE", "EXPIREAT", "PEXPIREAT",
+      "PERSIST", "STRLEN", "GETSET", "SETNX", "SETEX", "PSETEX", "LLEN", "LPOP", "RPOP", "LINDEX", "SCARD", "SISMEMBER", "CLIENT");
+
+  private static final String WRONGTYPE = "Operation against a key holding the wrong kind of value";
 
   private final    ArcadeDBServer      server;
   private final    ChannelBinaryServer channel;
   private volatile boolean             shutdown         = false;
+  /** Set by QUIT: the connection closes once the reply of the command is out. */
+  private          boolean             closeAfterReply  = false;
+  private          String              clientName       = null;
   private          int                 posInBuffer      = 0;
   private final    StringBuilder       value            = new StringBuilder();
   private final    byte[]              buffer           = new byte[32 * 1024];
@@ -212,6 +221,11 @@ public class RedisNetworkExecutor extends Thread {
           // Queued, not flushed: the replies of a pipelined batch leave together, when the next read would block (see fill())
           queueReply(value);
 
+          if (closeAfterReply) {
+            flushReplies();
+            close();
+          }
+
         } catch (final EOFException | SocketException e) {
           LogManager.instance().log(this, Level.FINE, "Redis wrapper: Error on reading request", e);
           close();
@@ -320,6 +334,7 @@ public class RedisNetworkExecutor extends Thread {
 
   public void close() {
     shutdown = true;
+    RedisKeyspace.forget(defaultBucket);
     releasePreAuthTicket();
     if (channel != null)
       channel.close();
@@ -415,6 +430,14 @@ public class RedisNetworkExecutor extends Thread {
 
         if ("HELLO".equals(cmdString)) {
           hello(list);
+          appendCrLf();
+          return;
+        }
+
+        // Answered whether or not the connection authenticated, as in Redis
+        if ("QUIT".equals(cmdString)) {
+          closeAfterReply = true;
+          value.append("+OK");
           appendCrLf();
           return;
         }
@@ -515,6 +538,185 @@ public class RedisNetworkExecutor extends Thread {
 
           case "SET":
             set(list);
+            break;
+
+          case "ECHO":
+            respondValue((String) list.get(1), true);
+            break;
+
+          // KEYS
+          case "DEL":
+          case "UNLINK":
+            del(list);
+            break;
+          case "TYPE":
+            type(list);
+            break;
+          case "EXPIRE":
+            expire(list, 1000L, false);
+            break;
+          case "PEXPIRE":
+            expire(list, 1L, false);
+            break;
+          case "EXPIREAT":
+            expire(list, 1000L, true);
+            break;
+          case "PEXPIREAT":
+            expire(list, 1L, true);
+            break;
+          case "TTL":
+            ttl(list, 1000L);
+            break;
+          case "PTTL":
+            ttl(list, 1L);
+            break;
+          case "PERSIST":
+            persist(list);
+            break;
+          case "KEYS":
+            keys(list);
+            break;
+          case "RANDOMKEY":
+            randomKey();
+            break;
+          case "RENAME":
+            rename(list, false);
+            break;
+          case "RENAMENX":
+            rename(list, true);
+            break;
+          case "DBSIZE":
+            respondValue(RedisKeyspace.keys(currentSpace()).size(), false);
+            break;
+          case "FLUSHDB":
+          case "FLUSHALL": // ONE KEY SPACE PER CONNECTION: THE CURRENT ONE
+            RedisKeyspace.clear(currentSpace());
+            value.append("+OK");
+            break;
+
+          // STRINGS
+          case "APPEND":
+            append(list);
+            break;
+          case "STRLEN":
+            strLen(list);
+            break;
+          case "GETRANGE":
+            getRange(list);
+            break;
+          case "SETRANGE":
+            setRange(list);
+            break;
+          case "MGET":
+            mGet(list);
+            break;
+          case "MSET":
+            mSet(list, false);
+            break;
+          case "MSETNX":
+            mSet(list, true);
+            break;
+          case "GETSET":
+            getSet(list);
+            break;
+          case "SETEX":
+            setEx(list, 1000L);
+            break;
+          case "PSETEX":
+            setEx(list, 1L);
+            break;
+          case "SETNX":
+            respondValue(setVariableIfAbsent((String) list.get(1), list.get(2)) == null ? 1 : 0, false);
+            break;
+
+          // LISTS
+          case "LPUSH":
+            push(list, true);
+            break;
+          case "RPUSH":
+            push(list, false);
+            break;
+          case "LPOP":
+            pop(list, true);
+            break;
+          case "RPOP":
+            pop(list, false);
+            break;
+          case "LLEN":
+            lLen(list);
+            break;
+          case "LRANGE":
+            lRange(list);
+            break;
+          case "LINDEX":
+            lIndex(list);
+            break;
+          case "LSET":
+            lSet(list);
+            break;
+          case "LINSERT":
+            lInsert(list);
+            break;
+          case "LREM":
+            lRem(list);
+            break;
+          case "LTRIM":
+            lTrim(list);
+            break;
+          case "RPOPLPUSH":
+            rPopLPush(list);
+            break;
+
+          // SETS
+          case "SADD":
+            sAdd(list);
+            break;
+          case "SREM":
+            sRem(list);
+            break;
+          case "SISMEMBER":
+            sIsMember(list);
+            break;
+          case "SMEMBERS":
+            sMembers(list);
+            break;
+          case "SCARD":
+            sCard(list);
+            break;
+          case "SRANDMEMBER":
+            sPick(list, false);
+            break;
+          case "SPOP":
+            sPick(list, true);
+            break;
+          case "SDIFF":
+            sCombine(list, SetCombine.DIFF);
+            break;
+          case "SINTER":
+            sCombine(list, SetCombine.INTER);
+            break;
+          case "SUNION":
+            sCombine(list, SetCombine.UNION);
+            break;
+          case "SDIFFSTORE":
+            sCombineStore(list, SetCombine.DIFF);
+            break;
+          case "SINTERSTORE":
+            sCombineStore(list, SetCombine.INTER);
+            break;
+          case "SUNIONSTORE":
+            sCombineStore(list, SetCombine.UNION);
+            break;
+
+          // CONNECTION
+          case "CLIENT":
+            client(list);
+            break;
+          case "COMMAND":
+            command(list);
+            break;
+          case "INFO":
+            info();
             break;
 
           default:
@@ -664,14 +866,19 @@ public class RedisNetworkExecutor extends Thread {
 
   private void get(final List<Object> list) {
     final String k = (String) list.get(1);
-    final Object v = getVariable(k);
+    final Object v = getStringVariable(k);
     respondValue(v, true);
   }
 
   private void getDel(final List<Object> list) {
-    final String k = (String) list.get(1);
-    final Object v = removeVariable(k);
-    respondValue(v, true);
+    // A list or a set is refused, and kept: the check and the delete are one operation on the key
+    final ResolvedKey resolved = resolveKey((String) list.get(1));
+    final Object[] previous = new Object[1];
+    RedisKeyspace.compute(resolved.space(), resolved.key(), current -> {
+      previous[0] = requireString(current);
+      return null;
+    });
+    respondValue(previous[0], true);
   }
 
   private void hDel(final List<Object> list) {
@@ -712,7 +919,7 @@ public class RedisNetworkExecutor extends Thread {
       // the two phases are not one atomic unit: variable removal cannot fail, but it is not undone with the records
       for (final String variable : variables)
         // the key as the client sent it, as GETDEL removes it (issue #10790)
-        if (database.getGlobalVariableStore().remove(variable) != null)
+        if (RedisKeyspace.remove(database.getGlobalVariableStore(), variable) != null)
           deleted[0]++;
     } else {
       // Persistent mode: delete from database
@@ -854,7 +1061,7 @@ public class RedisNetworkExecutor extends Thread {
       }
       final ConcurrentMap<String, Object> store = database.getGlobalVariableStore();
       for (int i = 0; i < count; i++)
-        store.put(keys[i], values[i]);
+        RedisKeyspace.put(store, keys[i], values[i]);
       value.append(":");
       value.append(count);
     } else {
@@ -918,9 +1125,10 @@ public class RedisNetworkExecutor extends Thread {
   /**
    * NX/XX must be a single atomic check-and-set: {@code SET k v NX} is the primitive a distributed-lock client
    * builds on, and evaluating "does k exist" and "write k" as two separate calls would let two racing clients both
-   * observe "absent" and both believe they acquired the lock. {@link #setVariableIfAbsent} / {@link
-   * #setVariableIfPresent} route to a single atomic map operation ({@code putIfAbsent} / {@code computeIfPresent} on the
-   * connection's bucket or on the database's global-variable store) instead of a get-then-set pair.
+   * observe "absent" and both believe they acquired the lock. NX and XX route to a single atomic map operation on the
+   * connection's bucket or on the database's global-variable store ({@link RedisKeyspace#putIfAbsent} /
+   * {@link RedisKeyspace#putIfPresent}) instead of a get-then-set pair. EX/PX/EXAT/PXAT give the key a TTL, KEEPTTL keeps the one it has,
+   * and with neither the write drops it, as in Redis.
    */
   private void set(final List<Object> list) {
     final String k = (String) list.get(1);
@@ -929,6 +1137,8 @@ public class RedisNetworkExecutor extends Thread {
     boolean nx = false;
     boolean xx = false;
     boolean get = false;
+    boolean keepTtl = false;
+    long expiresAt = 0L;
     for (int i = 3; i < list.size(); i++) {
       final String opt = ((String) list.get(i)).toUpperCase(Locale.ROOT);
       switch (opt) {
@@ -943,33 +1153,61 @@ public class RedisNetworkExecutor extends Thread {
       case "GET":
         get = true;
         break;
+      case "KEEPTTL":
+        if (expiresAt != 0L) throw new RedisException("syntax error");
+        keepTtl = true;
+        break;
       case "EX":
       case "PX":
       case "EXAT":
       case "PXAT":
-      case "KEEPTTL":
-        throw new RedisException("unsupported SET option '" + opt + "': ArcadeDB transient keys have no expiry");
+        if (keepTtl || expiresAt != 0L || i + 1 >= list.size())
+          throw new RedisException("syntax error");
+        expiresAt = expiryTime(parseExpiry((String) list.get(++i)), "EX".equals(opt) || "EXAT".equals(opt) ? 1000L : 1L,
+            opt.endsWith("AT"));
+        break;
       default:
         throw new RedisException("syntax error");
       }
     }
 
+    final ResolvedKey resolved = resolveKey(k);
+    final ConcurrentMap<String, Object> space = resolved.space();
+    final String key = resolved.key();
+    final long ttl = expiresAt;
+
     final Object previous;
     final boolean applied;
     if (nx) {
-      previous = setVariableIfAbsent(k, v);
+      previous = RedisKeyspace.putIfAbsent(space, key, v);
       applied = previous == null;
+      if (applied && ttl != 0L)
+        RedisKeyspace.expireAt(space, key, ttl);
     } else if (xx) {
-      previous = setVariableIfPresent(k, v);
+      previous = RedisKeyspace.putIfPresent(space, key, v, keepTtl);
       applied = previous != null;
+      if (applied && ttl != 0L)
+        RedisKeyspace.expireAt(space, key, ttl);
+    } else if (ttl != 0L) {
+      previous = RedisKeyspace.get(space, key);
+      RedisKeyspace.putWithTtl(space, key, v, ttl);
+      applied = true;
+    } else if (keepTtl) {
+      final Object[] holder = new Object[1];
+      RedisKeyspace.compute(space, key, current -> {
+        holder[0] = current;
+        return v;
+      });
+      previous = holder[0];
+      applied = true;
     } else {
-      previous = setVariable(k, v);
+      previous = RedisKeyspace.put(space, key, v);
       applied = true;
     }
 
     if (get) {
       // Real Redis returns the pre-existing value for GET regardless of whether NX/XX vetoed the write.
-      respondValue(previous, true);
+      respondValue(requireString(previous), true);
       return;
     }
 
@@ -980,6 +1218,642 @@ public class RedisNetworkExecutor extends Thread {
 
     value.append("+");
     value.append("OK");
+  }
+
+  // --- EXPIRY ---
+
+  /** An expiry amount as a client sent it, refused as Redis refuses it when it is not an integer. */
+  private static long parseExpiry(final String text) {
+    try {
+      return Long.parseLong(text);
+    } catch (final NumberFormatException e) {
+      throw new RedisException("value is not an integer or out of range");
+    }
+  }
+
+  /**
+   * The epoch millis a relative amount ({@code absolute} false) or a Unix time ({@code absolute} true) of {@code unitMillis}
+   * stands for. Used by SET and SETEX, where a time that is not positive is refused.
+   */
+  private static long expiryTime(final long amount, final long unitMillis, final boolean absolute) {
+    if (amount <= 0)
+      throw new RedisException("invalid expire time in 'set' command");
+    try {
+      final long millis = Math.multiplyExact(amount, unitMillis);
+      return absolute ? millis : Math.addExact(System.currentTimeMillis(), millis);
+    } catch (final ArithmeticException e) {
+      throw new RedisException("invalid expire time in 'set' command");
+    }
+  }
+
+  /** EXPIRE/PEXPIRE/EXPIREAT/PEXPIREAT. A time already past deletes the key, as in Redis. */
+  private void expire(final List<Object> list, final long unitMillis, final boolean absolute) {
+    final ResolvedKey resolved = resolveKey((String) list.get(1));
+    final long amount = parseExpiry((String) list.get(2));
+    long expiresAt;
+    try {
+      final long millis = Math.multiplyExact(amount, unitMillis);
+      expiresAt = absolute ? millis : Math.addExact(System.currentTimeMillis(), millis);
+    } catch (final ArithmeticException e) {
+      throw new RedisException("invalid expire time in '" + ((String) list.getFirst()).toLowerCase(Locale.ROOT) + "' command");
+    }
+    respondValue(RedisKeyspace.expireAt(resolved.space(), resolved.key(), expiresAt) ? 1 : 0, false);
+  }
+
+  /** TTL/PTTL: -2 when the key is absent, -1 when it has no TTL. */
+  private void ttl(final List<Object> list, final long unitMillis) {
+    final ResolvedKey resolved = resolveKey((String) list.get(1));
+    final long millis = RedisKeyspace.ttlMillis(resolved.space(), resolved.key());
+    respondValue(millis < 0 || unitMillis == 1L ? millis : (millis + 500) / unitMillis, false);
+  }
+
+  private void persist(final List<Object> list) {
+    final ResolvedKey resolved = resolveKey((String) list.get(1));
+    respondValue(RedisKeyspace.persist(resolved.space(), resolved.key()) ? 1 : 0, false);
+  }
+
+  // --- KEYS ---
+
+  private void del(final List<Object> list) {
+    int deleted = 0;
+    for (int i = 1; i < list.size(); i++)
+      if (removeVariable((String) list.get(i)) != null)
+        deleted++;
+    respondValue(deleted, false);
+  }
+
+  private void type(final List<Object> list) {
+    final Object v = getVariable((String) list.get(1));
+    value.append('+');
+    value.append(v == null ? "none" : v instanceof RedisList ? "list" : v instanceof RedisSet ? "set" : "string");
+  }
+
+  /** The keys of the current key space (the SELECTed database's, or the connection's own) that match the glob. */
+  private void keys(final List<Object> list) {
+    final String pattern = (String) list.get(1);
+    final List<String> matching = new ArrayList<>();
+    for (final String key : RedisKeyspace.keys(currentSpace()))
+      if (RedisGlob.matches(pattern, key))
+        matching.add(key);
+    respondArray(matching);
+  }
+
+  private void randomKey() {
+    final List<String> keys = RedisKeyspace.keys(currentSpace());
+    respondValue(keys.isEmpty() ? null : keys.get(ThreadLocalRandom.current().nextInt(keys.size())), true);
+  }
+
+  /**
+   * RENAME/RENAMENX within one key space; the value keeps its TTL. Not one atomic operation: the value is removed from the old key,
+   * then written to the new one, so a reader in between sees neither.
+   */
+  private void rename(final List<Object> list, final boolean onlyIfAbsent) {
+    final ResolvedKey from = resolveKey((String) list.get(1));
+    final ResolvedKey to = resolveKey((String) list.get(2));
+    if (from.space() != to.space())
+      throw new RedisException("source and destination keys are in different key spaces");
+
+    final ConcurrentMap<String, Object> space = from.space();
+    if (!RedisKeyspace.containsKey(space, from.key()))
+      throw new RedisException("no such key");
+
+    if (from.key().equals(to.key())) {
+      if (onlyIfAbsent)
+        respondValue(0, false);
+      else
+        value.append("+OK");
+      return;
+    }
+
+    if (onlyIfAbsent && RedisKeyspace.containsKey(space, to.key())) {
+      respondValue(0, false);
+      return;
+    }
+
+    final Long expiresAt = RedisKeyspace.expiresAt(space, from.key());
+    final Object moved = RedisKeyspace.remove(space, from.key());
+    if (moved == null)
+      throw new RedisException("no such key");
+    if (expiresAt != null)
+      RedisKeyspace.putWithTtl(space, to.key(), moved, expiresAt);
+    else
+      RedisKeyspace.put(space, to.key(), moved);
+
+    if (onlyIfAbsent)
+      respondValue(1, false);
+    else
+      value.append("+OK");
+  }
+
+  // --- STRINGS ---
+
+  private void append(final List<Object> list) {
+    final ResolvedKey resolved = resolveKey((String) list.get(1));
+    final String suffix = (String) list.get(2);
+    final String appended = (String) RedisKeyspace.compute(resolved.space(), resolved.key(), current -> {
+      final Object existing = requireString(current);
+      final String result = existing == null ? suffix : existing + suffix;
+      checkStringSize(RedisBinaryCodec.encodedLength(result));
+      return result;
+    });
+    respondValue(RedisBinaryCodec.encodedLength(appended), false);
+  }
+
+  private void strLen(final List<Object> list) {
+    final Object v = getStringVariable((String) list.get(1));
+    respondValue(v == null ? 0 : RedisBinaryCodec.encodedLength(v.toString()), false);
+  }
+
+  /** GETRANGE: offsets are bytes, as in Redis, and both ends are inclusive. */
+  private void getRange(final List<Object> list) {
+    final Object v = getStringVariable((String) list.get(1));
+    final long startArg = RedisCounterOperations.parseInteger((String) list.get(2));
+    final long endArg = RedisCounterOperations.parseInteger((String) list.get(3));
+    if (v == null) {
+      respondValue("", true);
+      return;
+    }
+
+    final byte[] bytes = RedisBinaryCodec.encode(v.toString());
+    final int length = bytes.length;
+    long start = startArg < 0 ? length + startArg : startArg;
+    long end = endArg < 0 ? length + endArg : endArg;
+    if (start < 0)
+      start = 0;
+    if (end < 0)
+      end = 0;
+    if (end >= length)
+      end = length - 1;
+    if (start > end || length == 0) {
+      respondValue("", true);
+      return;
+    }
+    final byte[] range = Arrays.copyOfRange(bytes, (int) start, (int) end + 1);
+    respondValue(RedisBinaryCodec.decode(range, range.length), true);
+  }
+
+  /** SETRANGE: overwrites from a byte offset, padding with zero bytes. @return the new length in bytes */
+  private void setRange(final List<Object> list) {
+    final ResolvedKey resolved = resolveKey((String) list.get(1));
+    final long offset = RedisCounterOperations.parseInteger((String) list.get(2));
+    final byte[] replacement = RedisBinaryCodec.encode((String) list.get(3));
+    if (offset < 0)
+      throw new RedisException("offset is out of range");
+    checkStringSize(offset + replacement.length);
+
+    final int[] newLength = new int[1];
+    RedisKeyspace.compute(resolved.space(), resolved.key(), current -> {
+      final Object existing = requireString(current);
+      final byte[] bytes = existing == null ? new byte[0] : RedisBinaryCodec.encode(existing.toString());
+      if (replacement.length == 0) {
+        // nothing to write: the key is left as it is, and not created
+        newLength[0] = bytes.length;
+        return existing;
+      }
+      final byte[] result = Arrays.copyOf(bytes, Math.max(bytes.length, (int) offset + replacement.length));
+      System.arraycopy(replacement, 0, result, (int) offset, replacement.length);
+      newLength[0] = result.length;
+      return RedisBinaryCodec.decode(result, result.length);
+    });
+    respondValue(newLength[0], false);
+  }
+
+  /** A string a command would grow past the bulk length a client may send is refused, as Redis refuses it past its own. */
+  private void checkStringSize(final long bytes) {
+    if (bytes > maxBulkLength)
+      throw new RedisException("string exceeds maximum allowed size (proto-max-bulk-len)");
+  }
+
+  private void mGet(final List<Object> list) {
+    value.append('*');
+    value.append(list.size() - 1);
+    for (int i = 1; i < list.size(); i++) {
+      appendCrLf();
+      final Object v = getVariable((String) list.get(i));
+      // nil for a key that holds a list or a set, rather than an error, as in Redis
+      respondValue(v instanceof RedisList || v instanceof RedisSet ? null : v, true);
+    }
+  }
+
+  /**
+   * MSET/MSETNX. MSETNX is best effort: its existence check and its writes are two passes, so two MSETNX racing on an overlapping
+   * set of keys can both write. A check-and-set across keys needs a lock across keys, which the key spaces do not have.
+   */
+  private void mSet(final List<Object> list, final boolean onlyIfNoneExists) {
+    if ((list.size() - 1) % 2 != 0)
+      throw RedisCommandArity.wrongArity((String) list.getFirst());
+
+    if (onlyIfNoneExists)
+      for (int i = 1; i < list.size(); i += 2)
+        if (containsVariable((String) list.get(i))) {
+          respondValue(0, false);
+          return;
+        }
+
+    for (int i = 1; i < list.size(); i += 2)
+      setVariable((String) list.get(i), list.get(i + 1));
+
+    if (onlyIfNoneExists)
+      respondValue(1, false);
+    else
+      value.append("+OK");
+  }
+
+  private void getSet(final List<Object> list) {
+    final ResolvedKey resolved = resolveKey((String) list.get(1));
+    final Object newValue = list.get(2);
+    final Object[] previous = new Object[1];
+    RedisKeyspace.compute(resolved.space(), resolved.key(), current -> {
+      previous[0] = requireString(current);
+      return newValue;
+    });
+    // GETSET drops the TTL, as any SET does
+    RedisKeyspace.persist(resolved.space(), resolved.key());
+    respondValue(previous[0], true);
+  }
+
+  private void setEx(final List<Object> list, final long unitMillis) {
+    final ResolvedKey resolved = resolveKey((String) list.get(1));
+    final long amount = parseExpiry((String) list.get(2));
+    if (amount <= 0)
+      throw new RedisException("invalid expire time in '" + ((String) list.getFirst()).toLowerCase(Locale.ROOT) + "' command");
+    RedisKeyspace.putWithTtl(resolved.space(), resolved.key(), list.get(3), expiryTime(amount, unitMillis, false));
+    value.append("+OK");
+  }
+
+  // --- LISTS: EVERY ACCESS TO A RedisList IS INSIDE A compute ON ITS KEY, WHICH SERIALIZES IT ---
+
+  private static RedisList listOf(final Object current) {
+    if (current == null || current instanceof RedisList)
+      return (RedisList) current;
+    throw RedisException.withKind("WRONGTYPE", WRONGTYPE);
+  }
+
+  /** An emptied list is no key, as in Redis. */
+  private static RedisList orNothing(final RedisList list) {
+    return list.size() == 0 ? null : list;
+  }
+
+  private void push(final List<Object> list, final boolean left) {
+    final ResolvedKey resolved = resolveKey((String) list.get(1));
+    final int[] size = new int[1];
+    RedisKeyspace.compute(resolved.space(), resolved.key(), current -> {
+      RedisList redisList = listOf(current);
+      if (redisList == null)
+        redisList = new RedisList();
+      for (int i = 2; i < list.size(); i++)
+        if (left)
+          redisList.addFirst((String) list.get(i));
+        else
+          redisList.addLast((String) list.get(i));
+      size[0] = redisList.size();
+      return redisList;
+    });
+    respondValue(size[0], false);
+  }
+
+  private void pop(final List<Object> list, final boolean left) {
+    final ResolvedKey resolved = resolveKey((String) list.get(1));
+    respondValue(popFrom(resolved, left), true);
+  }
+
+  private static String popFrom(final ResolvedKey resolved, final boolean left) {
+    final String[] popped = new String[1];
+    RedisKeyspace.compute(resolved.space(), resolved.key(), current -> {
+      final RedisList redisList = listOf(current);
+      if (redisList == null)
+        return null;
+      popped[0] = left ? redisList.pollFirst() : redisList.pollLast();
+      return orNothing(redisList);
+    });
+    return popped[0];
+  }
+
+  /** Reads a list under its key's lock, leaving it unchanged. {@code reader} gets null for an absent key. */
+  private <R> R readList(final String key, final Function<RedisList, R> reader) {
+    final ResolvedKey resolved = resolveKey(key);
+    final Object[] result = new Object[1];
+    RedisKeyspace.compute(resolved.space(), resolved.key(), current -> {
+      result[0] = reader.apply(listOf(current));
+      return current;
+    });
+    return (R) result[0];
+  }
+
+  private void lLen(final List<Object> list) {
+    respondValue(readList((String) list.get(1), l -> l == null ? 0 : l.size()), false);
+  }
+
+  /** The {start, stopExclusive} of a Redis range over {@code size} elements, start == stop when it is empty. */
+  private static int[] range(final long startArg, final long stopArg, final int size) {
+    long start = startArg < 0 ? size + startArg : startArg;
+    long stop = stopArg < 0 ? size + stopArg : stopArg;
+    if (start < 0)
+      start = 0;
+    if (stop >= size)
+      stop = size - 1;
+    if (start > stop || start >= size)
+      return new int[] { 0, 0 };
+    return new int[] { (int) start, (int) stop + 1 };
+  }
+
+  private void lRange(final List<Object> list) {
+    final long start = RedisCounterOperations.parseInteger((String) list.get(2));
+    final long stop = RedisCounterOperations.parseInteger((String) list.get(3));
+    final List<String> elements = readList((String) list.get(1), l -> {
+      if (l == null)
+        return List.of();
+      final int[] bounds = range(start, stop, l.size());
+      return l.range(bounds[0], bounds[1]);
+    });
+    respondArray(elements);
+  }
+
+  private void lIndex(final List<Object> list) {
+    final long index = RedisCounterOperations.parseInteger((String) list.get(2));
+    respondValue(readList((String) list.get(1), l -> {
+      if (l == null)
+        return null;
+      final long i = index < 0 ? l.size() + index : index;
+      return i < 0 || i >= l.size() ? null : l.get((int) i);
+    }), true);
+  }
+
+  private void lSet(final List<Object> list) {
+    final ResolvedKey resolved = resolveKey((String) list.get(1));
+    final long index = RedisCounterOperations.parseInteger((String) list.get(2));
+    final String element = (String) list.get(3);
+    RedisKeyspace.compute(resolved.space(), resolved.key(), current -> {
+      final RedisList redisList = listOf(current);
+      if (redisList == null)
+        throw new RedisException("no such key");
+      final long i = index < 0 ? redisList.size() + index : index;
+      if (i < 0 || i >= redisList.size())
+        throw new RedisException("index out of range");
+      redisList.set((int) i, element);
+      return redisList;
+    });
+    value.append("+OK");
+  }
+
+  private void lInsert(final List<Object> list) {
+    final ResolvedKey resolved = resolveKey((String) list.get(1));
+    final String position = ((String) list.get(2)).toUpperCase(Locale.ROOT);
+    final String pivot = (String) list.get(3);
+    final String element = (String) list.get(4);
+    if (!"BEFORE".equals(position) && !"AFTER".equals(position))
+      throw new RedisException("syntax error");
+
+    final int[] result = new int[1];
+    RedisKeyspace.compute(resolved.space(), resolved.key(), current -> {
+      final RedisList redisList = listOf(current);
+      if (redisList == null)
+        return null;
+      final int pivotIndex = redisList.indexOf(pivot);
+      if (pivotIndex < 0) {
+        result[0] = -1;
+        return redisList;
+      }
+      redisList.insert("BEFORE".equals(position) ? pivotIndex : pivotIndex + 1, element);
+      result[0] = redisList.size();
+      return redisList;
+    });
+    respondValue(result[0], false);
+  }
+
+  /** LREM: count > 0 removes from the head, count < 0 from the tail, 0 removes every occurrence. */
+  private void lRem(final List<Object> list) {
+    final ResolvedKey resolved = resolveKey((String) list.get(1));
+    final long count = RedisCounterOperations.parseInteger((String) list.get(2));
+    final String element = (String) list.get(3);
+
+    final int[] removed = new int[1];
+    RedisKeyspace.compute(resolved.space(), resolved.key(), current -> {
+      final RedisList redisList = listOf(current);
+      if (redisList == null)
+        return null;
+      final long limit = count == 0 ? Long.MAX_VALUE : Math.abs(count);
+      if (count >= 0) {
+        for (int i = 0; i < redisList.size() && removed[0] < limit; )
+          if (element.equals(redisList.get(i))) {
+            redisList.remove(i);
+            removed[0]++;
+          } else
+            i++;
+      } else
+        for (int i = redisList.size() - 1; i >= 0 && removed[0] < limit; i--)
+          if (element.equals(redisList.get(i))) {
+            redisList.remove(i);
+            removed[0]++;
+          }
+      return orNothing(redisList);
+    });
+    respondValue(removed[0], false);
+  }
+
+  private void lTrim(final List<Object> list) {
+    final ResolvedKey resolved = resolveKey((String) list.get(1));
+    final long start = RedisCounterOperations.parseInteger((String) list.get(2));
+    final long stop = RedisCounterOperations.parseInteger((String) list.get(3));
+    RedisKeyspace.compute(resolved.space(), resolved.key(), current -> {
+      final RedisList redisList = listOf(current);
+      if (redisList == null)
+        return null;
+      final int[] bounds = range(start, stop, redisList.size());
+      if (bounds[0] == bounds[1])
+        return null;
+      redisList.trim(bounds[0], bounds[1] - 1);
+      return redisList;
+    });
+    value.append("+OK");
+  }
+
+  /**
+   * RPOPLPUSH: two operations, one per key, as the keys can live in different key spaces. The destination is checked first, so a
+   * destination of the wrong type refuses the command before anything is popped.
+   */
+  private void rPopLPush(final List<Object> list) {
+    final ResolvedKey source = resolveKey((String) list.get(1));
+    final ResolvedKey destination = resolveKey((String) list.get(2));
+    listOf(RedisKeyspace.get(destination.space(), destination.key()));
+
+    final String element = popFrom(source, false);
+    if (element != null)
+      RedisKeyspace.compute(destination.space(), destination.key(), current -> {
+        RedisList redisList = listOf(current);
+        if (redisList == null)
+          redisList = new RedisList();
+        redisList.addFirst(element);
+        return redisList;
+      });
+    respondValue(element, true);
+  }
+
+  // --- SETS: LIKE THE LISTS, EVERY ACCESS TO A RedisSet IS INSIDE A compute ON ITS KEY ---
+
+  private enum SetCombine {DIFF, INTER, UNION}
+
+  private static RedisSet setOf(final Object current) {
+    if (current == null || current instanceof RedisSet)
+      return (RedisSet) current;
+    throw RedisException.withKind("WRONGTYPE", WRONGTYPE);
+  }
+
+  private <R> R readSet(final String key, final Function<RedisSet, R> reader) {
+    final ResolvedKey resolved = resolveKey(key);
+    final Object[] result = new Object[1];
+    RedisKeyspace.compute(resolved.space(), resolved.key(), current -> {
+      result[0] = reader.apply(setOf(current));
+      return current;
+    });
+    return (R) result[0];
+  }
+
+  private void sAdd(final List<Object> list) {
+    final ResolvedKey resolved = resolveKey((String) list.get(1));
+    final int[] added = new int[1];
+    RedisKeyspace.compute(resolved.space(), resolved.key(), current -> {
+      RedisSet redisSet = setOf(current);
+      if (redisSet == null)
+        redisSet = new RedisSet();
+      for (int i = 2; i < list.size(); i++)
+        if (redisSet.add((String) list.get(i)))
+          added[0]++;
+      return redisSet;
+    });
+    respondValue(added[0], false);
+  }
+
+  private void sRem(final List<Object> list) {
+    final ResolvedKey resolved = resolveKey((String) list.get(1));
+    final int[] removed = new int[1];
+    RedisKeyspace.compute(resolved.space(), resolved.key(), current -> {
+      final RedisSet redisSet = setOf(current);
+      if (redisSet == null)
+        return null;
+      for (int i = 2; i < list.size(); i++)
+        if (redisSet.remove((String) list.get(i)))
+          removed[0]++;
+      return redisSet.size() == 0 ? null : redisSet;
+    });
+    respondValue(removed[0], false);
+  }
+
+  private void sIsMember(final List<Object> list) {
+    final String member = (String) list.get(2);
+    respondValue(readSet((String) list.get(1), s -> s != null && s.contains(member)) ? 1 : 0, false);
+  }
+
+  private void sMembers(final List<Object> list) {
+    respondArray(readSet((String) list.get(1), s -> s == null ? List.of() : s.members()));
+  }
+
+  private void sCard(final List<Object> list) {
+    respondValue(readSet((String) list.get(1), s -> s == null ? 0 : s.size()), false);
+  }
+
+  /** SPOP ({@code remove}) and SRANDMEMBER, without a count. */
+  private void sPick(final List<Object> list, final boolean remove) {
+    final ResolvedKey resolved = resolveKey((String) list.get(1));
+    final String[] picked = new String[1];
+    RedisKeyspace.compute(resolved.space(), resolved.key(), current -> {
+      final RedisSet redisSet = setOf(current);
+      if (redisSet == null)
+        return null;
+      picked[0] = redisSet.random(ThreadLocalRandom.current());
+      if (remove && picked[0] != null)
+        redisSet.remove(picked[0]);
+      return redisSet.size() == 0 ? null : redisSet;
+    });
+    respondValue(picked[0], true);
+  }
+
+  private void sCombine(final List<Object> list, final SetCombine op) {
+    respondArray(new ArrayList<>(combineSets(list, 1, op)));
+  }
+
+  /** SDIFFSTORE/SINTERSTORE/SUNIONSTORE: the destination is overwritten, and deleted when the result is empty. */
+  private void sCombineStore(final List<Object> list, final SetCombine op) {
+    final Set<String> result = combineSets(list, 2, op);
+    final ResolvedKey destination = resolveKey((String) list.get(1));
+    if (result.isEmpty())
+      RedisKeyspace.remove(destination.space(), destination.key());
+    else {
+      final RedisSet stored = new RedisSet();
+      for (final String member : result)
+        stored.add(member);
+      RedisKeyspace.put(destination.space(), destination.key(), stored);
+    }
+    respondValue(result.size(), false);
+  }
+
+  /** A snapshot of each set, combined: the sets are read one at a time, not all under one lock. */
+  private Set<String> combineSets(final List<Object> list, final int firstKeyIndex, final SetCombine op) {
+    Set<String> result = null;
+    for (int i = firstKeyIndex; i < list.size(); i++) {
+      final List<String> members = readSet((String) list.get(i), s -> s == null ? List.of() : s.members());
+      if (result == null)
+        result = new LinkedHashSet<>(members);
+      else
+        switch (op) {
+        case DIFF -> members.forEach(result::remove);
+        case INTER -> result.retainAll(new HashSet<>(members));
+        case UNION -> result.addAll(members);
+        }
+    }
+    return result == null ? new LinkedHashSet<>() : result;
+  }
+
+  // --- CONNECTION ---
+
+  private void client(final List<Object> list) {
+    final String subcommand = ((String) list.get(1)).toUpperCase(Locale.ROOT);
+    switch (subcommand) {
+    case "SETNAME" -> {
+      if (list.size() != 3)
+        throw RedisCommandArity.wrongArity("client|setname");
+      final String name = (String) list.get(2);
+      if (name.indexOf(' ') >= 0 || name.indexOf('\n') >= 0)
+        throw new RedisException("Client names cannot contain spaces, newlines or special characters.");
+      clientName = name.isEmpty() ? null : name;
+      value.append("+OK");
+    }
+    case "GETNAME" -> respondValue(clientName, true);
+    case "ID" -> respondValue(threadId(), false);
+    case "SETINFO" -> value.append("+OK");
+    case "LIST", "INFO" -> respondValue(
+        "id=" + threadId() + " addr=" + channel.socket.getRemoteSocketAddress() + " name=" + (clientName != null ? clientName : "")
+            + (selectedDatabaseName != null ? " db=" + selectedDatabaseName : "") + "\n", true);
+    default -> throw new RedisException("unknown subcommand '" + subcommand + "'. Try CLIENT HELP.");
+    }
+  }
+
+  /** COMMAND: answered empty, enough for the clients that ask for the command table when they connect. */
+  private void command(final List<Object> list) {
+    if (list.size() == 1) {
+      value.append("*0");
+      return;
+    }
+    final String subcommand = ((String) list.get(1)).toUpperCase(Locale.ROOT);
+    switch (subcommand) {
+    case "DOCS", "INFO", "LIST", "GETKEYS" -> value.append("*0");
+    case "COUNT" -> value.append(":0");
+    default -> throw new RedisException("unknown subcommand '" + subcommand + "'. Try COMMAND HELP.");
+    }
+  }
+
+  private void info() {
+    respondValue("# Server\r\nredis_version:7.0.0\r\narcadedb_version:" + Constants.getRawVersion() + "\r\nredis_mode:standalone\r\n\r\n"
+        + "# Keyspace\r\ndb0:keys=" + RedisKeyspace.keys(currentSpace()).size() + "\r\n", true);
+  }
+
+  private void respondArray(final List<String> elements) {
+    value.append('*');
+    value.append(elements.size());
+    for (final String element : elements) {
+      appendCrLf();
+      respondValue(element, true);
+    }
   }
 
   private void ping(final List<Object> list) {
@@ -1222,7 +2096,18 @@ public class RedisNetworkExecutor extends Thread {
 
   private Object getVariable(final String key) {
     final ResolvedKey resolved = resolveKey(key);
-    return resolved.space().get(resolved.key());
+    return RedisKeyspace.get(resolved.space(), resolved.key());
+  }
+
+  /** The value of a string key: null when absent, refused when the key holds a list or a set. */
+  private Object getStringVariable(final String key) {
+    return requireString(getVariable(key));
+  }
+
+  private static Object requireString(final Object value) {
+    if (value instanceof RedisList || value instanceof RedisSet)
+      throw RedisException.withKind("WRONGTYPE", WRONGTYPE);
+    return value;
   }
 
   /**
@@ -1230,7 +2115,7 @@ public class RedisNetworkExecutor extends Thread {
    */
   private Object setVariable(final String key, final Object value) {
     final ResolvedKey resolved = resolveKey(key);
-    return resolved.space().put(resolved.key(), value);
+    return RedisKeyspace.put(resolved.space(), resolved.key(), value);
   }
 
   /**
@@ -1240,22 +2125,7 @@ public class RedisNetworkExecutor extends Thread {
    */
   private Object setVariableIfAbsent(final String key, final Object value) {
     final ResolvedKey resolved = resolveKey(key);
-    return resolved.space().putIfAbsent(resolved.key(), value);
-  }
-
-  /**
-   * Atomic check-and-set: writes {@code value} only if the key is currently present.
-   *
-   * @return the previous value if the key was set (now replaced), or null if it was absent (left untouched)
-   */
-  private Object setVariableIfPresent(final String key, final Object value) {
-    final ResolvedKey resolved = resolveKey(key);
-    final Object[] previous = new Object[1];
-    resolved.space().computeIfPresent(resolved.key(), (k, current) -> {
-      previous[0] = current;
-      return value;
-    });
-    return previous[0];
+    return RedisKeyspace.putIfAbsent(resolved.space(), resolved.key(), value);
   }
 
   /**
@@ -1266,8 +2136,8 @@ public class RedisNetworkExecutor extends Thread {
    * real Redis' single-threaded command loop makes INCR atomic, a counter is the single most common thing INCR is
    * used for, and {@code RedisNetworkExecutor} is a thread per connection with no lock between them - so two
    * connections incrementing one key interleaved their read and their write and lost updates, replying a plausible
-   * {@code :<n>} to each. It is the read-modify-write sibling of the check-and-set pair {@link #setVariableIfAbsent}
-   * / {@link #setVariableIfPresent} that SET NX/XX already had.
+   * {@code :<n>} to each. It is the read-modify-write sibling of the check-and-set primitives SET NX/XX already had.
+   * The key keeps its TTL, as INCR keeps it in Redis, and a list or a set is refused.
    * <p>
    * {@code remapping} runs while the map holds that key's bin, so it must stay short and must not touch the
    * keyspace again. Throwing out of it - which is how a value INCR cannot operate on is refused - leaves the key
@@ -1277,17 +2147,22 @@ public class RedisNetworkExecutor extends Thread {
    */
   private Object computeVariable(final String key, final UnaryOperator<Object> remapping) {
     final ResolvedKey resolved = resolveKey(key);
-    return resolved.space().compute(resolved.key(), (k, current) -> remapping.apply(current));
+    return RedisKeyspace.compute(resolved.space(), resolved.key(), current -> remapping.apply(requireString(current)));
   }
 
   private Object removeVariable(final String key) {
     final ResolvedKey resolved = resolveKey(key);
-    return resolved.space().remove(resolved.key());
+    return RedisKeyspace.remove(resolved.space(), resolved.key());
   }
 
   private boolean containsVariable(final String key) {
     final ResolvedKey resolved = resolveKey(key);
-    return resolved.space().containsKey(resolved.key());
+    return RedisKeyspace.containsKey(resolved.space(), resolved.key());
+  }
+
+  /** The key space a key with no database prefix lands in: the SELECTed database's, or the connection's own. */
+  private ConcurrentMap<String, Object> currentSpace() {
+    return selectedDatabaseName != null ? getAuthorizedDatabase(selectedDatabaseName).getGlobalVariableStore() : defaultBucket;
   }
 
   private Object parseNext() throws IOException {
@@ -1696,7 +2571,7 @@ public class RedisNetworkExecutor extends Thread {
    */
   private String getTransientValue(final String databaseName, final String key) {
     final DatabaseInternal database = getAuthorizedDatabase(databaseName);
-    final Object value = database.getGlobalVariableStore().get(key);
+    final Object value = RedisKeyspace.get(database.getGlobalVariableStore(), key);
     return value != null ? value.toString() : null;
   }
 

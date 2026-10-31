@@ -43,6 +43,32 @@ public final class RedisCommandArity {
       Map.entry("GET", new int[] { 2, 2 }), Map.entry("GETDEL", new int[] { 2, 2 }),//
       Map.entry("EXISTS", new int[] { 2, -1 }), Map.entry("SET", new int[] { 3, -1 }));
 
+  /**
+   * The key space commands only the wire path dispatches: keys, strings, lists, sets, expiry and connection. EXPIRE's NX/XX/GT/LT
+   * options and the COUNT of LPOP/RPOP/SPOP/SRANDMEMBER are not supported, so their shapes are the ones without them.
+   */
+  private static final Map<String, int[]> WIRE_KEYSPACE = Map.ofEntries(//
+      Map.entry("ECHO", new int[] { 2, 2 }), Map.entry("DEL", new int[] { 2, -1 }), Map.entry("UNLINK", new int[] { 2, -1 }),//
+      Map.entry("TYPE", new int[] { 2, 2 }), Map.entry("EXPIRE", new int[] { 3, 3 }), Map.entry("PEXPIRE", new int[] { 3, 3 }),//
+      Map.entry("EXPIREAT", new int[] { 3, 3 }), Map.entry("PEXPIREAT", new int[] { 3, 3 }), Map.entry("TTL", new int[] { 2, 2 }),//
+      Map.entry("PTTL", new int[] { 2, 2 }), Map.entry("PERSIST", new int[] { 2, 2 }), Map.entry("KEYS", new int[] { 2, 2 }),//
+      Map.entry("RANDOMKEY", new int[] { 1, 1 }), Map.entry("RENAME", new int[] { 3, 3 }), Map.entry("RENAMENX", new int[] { 3, 3 }),//
+      Map.entry("DBSIZE", new int[] { 1, 1 }), Map.entry("FLUSHDB", new int[] { 1, 2 }), Map.entry("FLUSHALL", new int[] { 1, 2 }),//
+      Map.entry("APPEND", new int[] { 3, 3 }), Map.entry("STRLEN", new int[] { 2, 2 }), Map.entry("GETRANGE", new int[] { 4, 4 }),//
+      Map.entry("SETRANGE", new int[] { 4, 4 }), Map.entry("MGET", new int[] { 2, -1 }), Map.entry("MSET", new int[] { 3, -1 }),//
+      Map.entry("MSETNX", new int[] { 3, -1 }), Map.entry("GETSET", new int[] { 3, 3 }), Map.entry("SETEX", new int[] { 4, 4 }),//
+      Map.entry("PSETEX", new int[] { 4, 4 }), Map.entry("SETNX", new int[] { 3, 3 }),//
+      Map.entry("LPUSH", new int[] { 3, -1 }), Map.entry("RPUSH", new int[] { 3, -1 }), Map.entry("LPOP", new int[] { 2, 2 }),//
+      Map.entry("RPOP", new int[] { 2, 2 }), Map.entry("LLEN", new int[] { 2, 2 }), Map.entry("LRANGE", new int[] { 4, 4 }),//
+      Map.entry("LINDEX", new int[] { 3, 3 }), Map.entry("LSET", new int[] { 4, 4 }), Map.entry("LINSERT", new int[] { 5, 5 }),//
+      Map.entry("LREM", new int[] { 4, 4 }), Map.entry("LTRIM", new int[] { 4, 4 }), Map.entry("RPOPLPUSH", new int[] { 3, 3 }),//
+      Map.entry("SADD", new int[] { 3, -1 }), Map.entry("SREM", new int[] { 3, -1 }), Map.entry("SISMEMBER", new int[] { 3, 3 }),//
+      Map.entry("SMEMBERS", new int[] { 2, 2 }), Map.entry("SCARD", new int[] { 2, 2 }), Map.entry("SRANDMEMBER", new int[] { 2, 2 }),//
+      Map.entry("SPOP", new int[] { 2, 2 }), Map.entry("SDIFF", new int[] { 2, -1 }), Map.entry("SINTER", new int[] { 2, -1 }),//
+      Map.entry("SUNION", new int[] { 2, -1 }), Map.entry("SDIFFSTORE", new int[] { 3, -1 }),//
+      Map.entry("SINTERSTORE", new int[] { 3, -1 }), Map.entry("SUNIONSTORE", new int[] { 3, -1 }),//
+      Map.entry("CLIENT", new int[] { 2, -1 }), Map.entry("COMMAND", new int[] { 1, -1 }), Map.entry("INFO", new int[] { 1, -1 }));
+
   /** The hash commands in their wire shape. */
   private static final Map<String, int[]> WIRE_HASH = Map.ofEntries(//
       Map.entry("HDEL", new int[] { 2, -1 }), Map.entry("HEXISTS", new int[] { 3, 3 }),//
@@ -65,9 +91,11 @@ public final class RedisCommandArity {
     check(RAM.get(command), command, argumentCount);
   }
 
-  /** Same as {@link #checkRam} for every command of the wire protocol, the hash commands included. */
+  /** Same as {@link #checkRam} for every command of the wire protocol, the key space and hash commands included. */
   public static void checkWire(final String command, final int argumentCount) {
-    final int[] arity = RAM.get(command);
+    int[] arity = RAM.get(command);
+    if (arity == null)
+      arity = WIRE_KEYSPACE.get(command);
     check(arity != null ? arity : WIRE_HASH.get(command), command, argumentCount);
   }
 

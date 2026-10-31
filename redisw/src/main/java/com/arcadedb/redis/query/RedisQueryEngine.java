@@ -43,6 +43,7 @@ import com.arcadedb.redis.RedisCommandArity;
 import com.arcadedb.redis.RedisCounterOperations;
 import com.arcadedb.redis.RedisException;
 import com.arcadedb.redis.RedisIndexKeys;
+import com.arcadedb.redis.RedisKeyspace;
 import com.arcadedb.redis.RedisRecords;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.LocalEdgeType;
@@ -388,9 +389,9 @@ public class RedisQueryEngine implements QueryEngine {
       for (final Map.Entry<String, Object> entry : values.entrySet())
         // a buffered null is GETDEL's delete
         if (entry.getValue() == null)
-          store.remove(entry.getKey());
+          RedisKeyspace.remove(store, entry.getKey());
         else
-          store.put(entry.getKey(), entry.getValue());
+          RedisKeyspace.put(store, entry.getKey(), entry.getValue());
     }
   }
 
@@ -588,7 +589,7 @@ public class RedisQueryEngine implements QueryEngine {
   private Object readRamVariable(final String key, final RamOverlay overlay) {
     if (overlay != null && overlay.hasKey(key))
       return overlay.get(key);
-    return database.getGlobalVariableStore().get(key);
+    return RedisKeyspace.get(database.getGlobalVariableStore(), key);
   }
 
   /**
@@ -606,7 +607,7 @@ public class RedisQueryEngine implements QueryEngine {
       overlay.set(key, newValue);
       return newValue;
     }
-    final Object newValue = database.getGlobalVariableStore().compute(key, (k, current) -> remapping.apply(current));
+    final Object newValue = RedisKeyspace.compute(database.getGlobalVariableStore(), key, remapping);
     return slot != null ? slot.reserve(newValue) : newValue;
   }
 
@@ -617,7 +618,7 @@ public class RedisQueryEngine implements QueryEngine {
     if (overlay != null)
       overlay.set(key, value);
     else
-      database.getGlobalVariableStore().put(key, value);
+      RedisKeyspace.put(database.getGlobalVariableStore(), key, value);
     return "OK";
   }
 
@@ -638,7 +639,7 @@ public class RedisQueryEngine implements QueryEngine {
     }
     // remove atomically returns the previous value - the same reason GETDEL needs it that INCR needs compute (issue #8248): two
     // concurrent GETDEL calls on the same key must not both read it.
-    final Object previous = database.getGlobalVariableStore().remove(key);
+    final Object previous = RedisKeyspace.remove(database.getGlobalVariableStore(), key);
     return slot != null ? slot.reserve(previous) : previous;
   }
 

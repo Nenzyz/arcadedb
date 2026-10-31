@@ -393,9 +393,9 @@ public class RedisRespCorrectnessTest extends BaseRedisServerTest {
   }
 
   @Test
-  void setWithUnsupportedExpiryOptionIsRejectedInsteadOfSilentlyIgnored() throws Exception {
+  void setWithAnExpiryOptionGivesTheKeyATtlInsteadOfSilentlyIgnoringIt() throws Exception {
     // (issue #6466): EX/PX were silently dropped, so a client setting EX 10 believed the key would
-    // expire. ArcadeDB transient keys have no TTL store, so the honest reply is a clear error.
+    // expire. They were then refused, and are now honoured: the key gets the TTL it was given.
     try (final Socket socket = new Socket("localhost", getServerRedisPort())) {
       socket.setSoTimeout(10_000);
 
@@ -403,9 +403,18 @@ public class RedisRespCorrectnessTest extends BaseRedisServerTest {
       readReply(socket); // +OK
 
       sendCommand(socket, "SET", "ttlKey", "v", "EX", "10");
-      final String reply = readReply(socket);
-      assertThat(reply).startsWith("-ERR");
-      assertThat(reply).containsIgnoringCase("unsupported");
+      assertThat(readReply(socket)).isEqualTo("+OK");
+
+      sendCommand(socket, "TTL", "ttlKey");
+      final String ttl = readReply(socket);
+      assertThat(ttl).startsWith(":");
+      assertThat(Long.parseLong(ttl.substring(1))).isBetween(1L, 10L);
+
+      // an amount that is not a positive integer is still refused
+      sendCommand(socket, "SET", "ttlKey", "v", "EX", "0");
+      assertThat(readReply(socket)).startsWith("-ERR");
+      sendCommand(socket, "SET", "ttlKey", "v", "PX");
+      assertThat(readReply(socket)).startsWith("-ERR");
     }
   }
 

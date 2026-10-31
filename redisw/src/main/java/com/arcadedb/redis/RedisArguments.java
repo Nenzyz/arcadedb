@@ -51,11 +51,37 @@ public final class RedisArguments {
       Map.entry("INCRBYFLOAT", new int[] { 1, 1 }), Map.entry("DECR", new int[] { 1, 1 }),//
       Map.entry("DECRBY", new int[] { 1, 1 }),//
       Map.entry("HGET", new int[] { 2, 2 }), Map.entry("HEXISTS", new int[] { 2, 2 }),//
-      Map.entry("HMGET", new int[] { 2, -1 }), Map.entry("HDEL", new int[] { 2, -1 }));
+      Map.entry("HMGET", new int[] { 2, -1 }), Map.entry("HDEL", new int[] { 2, -1 }),//
+      Map.entry("DEL", new int[] { 1, -1 }), Map.entry("UNLINK", new int[] { 1, -1 }), Map.entry("TYPE", new int[] { 1, 1 }),//
+      Map.entry("EXPIRE", new int[] { 1, 1 }), Map.entry("PEXPIRE", new int[] { 1, 1 }), Map.entry("EXPIREAT", new int[] { 1, 1 }),//
+      Map.entry("PEXPIREAT", new int[] { 1, 1 }), Map.entry("TTL", new int[] { 1, 1 }), Map.entry("PTTL", new int[] { 1, 1 }),//
+      Map.entry("PERSIST", new int[] { 1, 1 }), Map.entry("RENAME", new int[] { 1, 2 }), Map.entry("RENAMENX", new int[] { 1, 2 }),//
+      Map.entry("APPEND", new int[] { 1, 1 }), Map.entry("STRLEN", new int[] { 1, 1 }), Map.entry("GETRANGE", new int[] { 1, 1 }),//
+      Map.entry("SETRANGE", new int[] { 1, 1 }), Map.entry("MGET", new int[] { 1, -1 }), Map.entry("GETSET", new int[] { 1, 1 }),//
+      Map.entry("SETEX", new int[] { 1, 1 }), Map.entry("PSETEX", new int[] { 1, 1 }), Map.entry("SETNX", new int[] { 1, 1 }),//
+      // MSET and MSETNX alternate keys and values: every argument is opaque, and listed here so both are kept
+      Map.entry("MSET", new int[] { 1, -1 }), Map.entry("MSETNX", new int[] { 1, -1 }),//
+      Map.entry("LPUSH", new int[] { 1, 1 }), Map.entry("RPUSH", new int[] { 1, 1 }), Map.entry("LPOP", new int[] { 1, 1 }),//
+      Map.entry("RPOP", new int[] { 1, 1 }), Map.entry("LLEN", new int[] { 1, 1 }), Map.entry("LRANGE", new int[] { 1, 1 }),//
+      Map.entry("LINDEX", new int[] { 1, 1 }), Map.entry("LSET", new int[] { 1, 1 }), Map.entry("LINSERT", new int[] { 1, 1 }),//
+      Map.entry("LREM", new int[] { 1, 1 }), Map.entry("LTRIM", new int[] { 1, 1 }), Map.entry("RPOPLPUSH", new int[] { 1, 2 }),//
+      Map.entry("SADD", new int[] { 1, 1 }), Map.entry("SREM", new int[] { 1, 1 }), Map.entry("SISMEMBER", new int[] { 1, 1 }),//
+      Map.entry("SMEMBERS", new int[] { 1, 1 }), Map.entry("SCARD", new int[] { 1, 1 }), Map.entry("SRANDMEMBER", new int[] { 1, 1 }),//
+      Map.entry("SPOP", new int[] { 1, 1 }), Map.entry("SDIFF", new int[] { 1, -1 }), Map.entry("SINTER", new int[] { 1, -1 }),//
+      Map.entry("SUNION", new int[] { 1, -1 }), Map.entry("SDIFFSTORE", new int[] { 1, -1 }),//
+      Map.entry("SINTERSTORE", new int[] { 1, -1 }), Map.entry("SUNIONSTORE", new int[] { 1, -1 }));
 
-  /** The arguments that are a value stored or echoed as it came. */
-  private static final Map<String, int[]> VALUES = Map.of(//
-      "SET", new int[] { 2, 2 }, "ECHO", new int[] { 1, 1 }, "PING", new int[] { 1, 1 });
+  /**
+   * The arguments that are a value stored or echoed as it came. The pattern of KEYS is one too: it is matched against keys that
+   * kept their bytes, so it keeps its own.
+   */
+  private static final Map<String, int[]> VALUES = Map.ofEntries(//
+      Map.entry("SET", new int[] { 2, 2 }), Map.entry("ECHO", new int[] { 1, 1 }), Map.entry("PING", new int[] { 1, 1 }),//
+      Map.entry("KEYS", new int[] { 1, 1 }), Map.entry("APPEND", new int[] { 2, 2 }), Map.entry("SETRANGE", new int[] { 3, 3 }),//
+      Map.entry("GETSET", new int[] { 2, 2 }), Map.entry("SETEX", new int[] { 3, 3 }), Map.entry("PSETEX", new int[] { 3, 3 }),//
+      Map.entry("SETNX", new int[] { 2, 2 }), Map.entry("LPUSH", new int[] { 2, -1 }), Map.entry("RPUSH", new int[] { 2, -1 }),//
+      Map.entry("LSET", new int[] { 3, 3 }), Map.entry("LINSERT", new int[] { 3, 4 }), Map.entry("LREM", new int[] { 3, 3 }),//
+      Map.entry("SADD", new int[] { 2, -1 }), Map.entry("SREM", new int[] { 2, -1 }), Map.entry("SISMEMBER", new int[] { 2, 2 }));
 
   /** KEYS and VALUES of a command merged as {keyFirst, keyLast, valueFirst, valueLast}, what the argument loop reads. */
   private static final Map<String, int[]> OPAQUE;
